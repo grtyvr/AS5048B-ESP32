@@ -19,33 +19,26 @@ const uint16_t AS5048_REG_ANGLE = 0x3FFF; // Angle after ATAN calculation and ze
 
 const uint16_t AS5048_READ_CMD = 0x4000;  // bit 15 = 1 for read operation.   
 
+SPIClass * vspi = NULL;
+
 AS5048A::AS5048A(uint8_t arg_cs){
   _cs = arg_cs;
   pinMode(_cs, OUTPUT);
   _errorFlag = false;
-  _angle = 0.0;
-}
-
-AS5048A::AS5048A(uint8_t arg_cs, uint8_t arg_sck, uint8_t arg_cipo, uint8_t arg_copi){
-  _cs = arg_cs;
-  _sck = arg_sck;
-  _cipo = arg_cipo;
-  _copi = arg_copi;
-  pinMode(_cs, OUTPUT);
-  _errorFlag = false;
-  _angle = 0.0;
+  _angle = 0.0;                           // initialize to zero degrees
 }
 
 void AS5048A::init(){
   // set up the SPI interface so that we can communicate with the chip
   // use mode 1, 
   settings = SPISettings(1000000, MSBFIRST, SPI_MODE1);
+  vspi = new SPIClass(VSPI);
   // Wake up the bus
-  SPI.begin();
+  vspi->begin();
 }
 
 void AS5048A::close(){
-  SPI.end();
+  vspi->end();
 }
 
 bool AS5048A::error(){
@@ -65,11 +58,78 @@ uint16_t AS5048A::getAngle(){
 }
 
 uint16_t AS5048A::getExpSmoothAngle(float smoothingFactor){
+  /// use exponential smoothing to return the new reading
+  /// since we might be crossing from 2^14 back to 0 we need to take care about normalizing our readings
   uint16_t newAngle = read(AS5048_REG_ANGLE);
   // the bottom 14 bits are the angle
    newAngle &= 0x3FFF;
-   _angle = round( (_angle * (1 - smoothingFactor)) + (newAngle * smoothingFactor));
-   return (uint16_t) _angle;
+  // make sure we have not wrapped around
+  // we do that by making sure that our old value is not more than half
+  // of the total range away from the new value
+  // For example:
+  //    1 ---> 16383 is just 3 tic
+  //  We want to do something reasonable with that sort of thing
+  //
+  if (_angle - newAngle > 8192){
+    // we have wrapped from High to LOW
+    // so move the new value out past the high end
+    // calculate what the smoothed value would be as if the range was wider
+    // and if that new value would move us out of range, then return
+    // the wrapped value
+    newAngle += 16384;
+    _angle = (_angle * (1 - smoothingFactor)) + (newAngle * smoothingFactor);
+  } else if (newAngle - _angle > 8192){
+    // here we have wrapped from Low to High
+    // so move the new value to the low end ( may be negative but it still works)
+    // calculate what the smoothed value would be as if the range was wider
+    // and if that new value would move us out of range, then return
+    // the wrapped value
+    newAngle -= 16384;
+    _angle = (_angle * (1 - smoothingFactor)) + (newAngle * smoothingFactor);
+    // this could be negative.  If it is we have to wrap back to the top....
+    if (_angle < 0){
+      _angle += 16384;
+    }
+  } else {
+    _angle = (_angle * (1 - smoothingFactor)) + (newAngle * smoothingFactor);
+  }
+  return  ((uint16_t) round(_angle)) % 16384;
+}
+
+uint16_t AS5048A::getAverageAngle(int numSamples){
+  uint16_t retVal;
+  // define a constant for the smallest angular increment we can have in radians
+  // to generalize this to other bitdepth encoders replace the 2^14 with the number of increments
+  const float angleIncrement = ( 2 * PI ) / (2^14);
+  /// take a number of samples and return the circular mean value
+  /// since we might have a situation where we are sampling at the transition from
+  /// 2^14 - n to m for small integer n and small integer m, have to be carefull to normalize our data
+  uint16_t sample;
+  float x_coord = 0;
+  float y_coord = 0;
+  for (int i=0; i < numSamples; i++){
+    // take a sample and compute the x and y coordinate of the sample as if it on the unit circle
+    sample = getAngle();
+    x_coord += cos(sample * angleIncrement);
+    y_coord += sin(sample * angleIncrement);
+  }
+  // Take the average X and average Y values
+  float averageX = x_coord/numSamples;
+  float averageY = y_coord/numSamples;
+  if ( (averageX == 0.0) & (averageY ==0.0) ){
+    // pathalogical case of both X and Y being equal to zero as floats!
+    retVal = 0;
+  } else {
+    float angle = atan2(averageY, averageX);
+    if (angle >= 0){
+      // if the angle returned by atan2 is positive then it is a positive rotation CCW 
+      retVal = round(angle/angleIncrement);
+    }
+
+  }
+
+
+  return retVal; 
 }
 
 void AS5048A::printDiagnostics(){
@@ -105,24 +165,24 @@ uint8_t AS5048A::getErrors(){
   uint8_t retVal;
   // Set up the command we will send
   uint16_t command = 0x4001;  // 0b0100000000000001
-  SPI.beginTransaction(settings);
+  vspi->beginTransaction(settings);
   // Drop cs low to enable the AS5048
   digitalWrite(_cs, LOW);
-  retVal = SPI.transfer16(command);
+  retVal = vspi->transfer16(command);
   digitalWrite(_cs, HIGH);
   delayMicroseconds(100);
   digitalWrite(_cs, LOW);
   // you have to poll the chip twice.  Data from previous command comes
   // back on the next SPI transfer
-  retVal = SPI.transfer16(command);
+  retVal = vspi->transfer16(command);
   digitalWrite(_cs, HIGH);
   delayMicroseconds(100);
   digitalWrite(_cs, LOW);
   // // you have to poll the chip twice.  Data from previous command comes
   // // back on the next SPI transfer
-  SPI.transfer16(command);
+  vspi->transfer16(command);
   digitalWrite(_cs, HIGH);
-  SPI.endTransaction();
+  vspi->endTransaction();
   #ifdef AS5048A_DEBUG
     Serial.print("Sent Command: ");
     Serial.println(command, HEX);
@@ -145,19 +205,19 @@ uint16_t AS5048A::read(uint16_t registerAddress){
   uint16_t command = AS5048_READ_CMD | registerAddress;
   // leftmost bit is an even parity bit.
   command |= calcEvenParity(command) << 15;
-  SPI.beginTransaction(settings);
+  vspi->beginTransaction(settings);
   // Drop cs low to enable the AS5048
   digitalWrite(_cs, LOW);
-  data = SPI.transfer16(command);
+  data = vspi->transfer16(command);
   digitalWrite(_cs, HIGH);
   delayMicroseconds(100);
   digitalWrite(_cs, LOW);
   // you have to poll the chip twice.  Data from previous command comes
   // back on the next SPI transfer so we send a dummy operation to get
   // the result of our last command
-  data = SPI.transfer16(0x0000);
+  data = vspi->transfer16(0x0000);
   digitalWrite(_cs, HIGH);
-  SPI.endTransaction();
+  vspi->endTransaction();
   #ifdef AS5048A_DEBUG
     Serial.print("Sent Command: ");
     Serial.println(command, HEX);

@@ -6,8 +6,6 @@ const uint8_t azPin = 5;
 
 AS5048A azSensor(azPin);
 
-
-
 void setup() {
   Serial.begin(9600);
   azSensor.init();
@@ -17,7 +15,7 @@ void setup() {
 
 void loop() {
   Serial.print("Azimuth angle: ");
-  Serial.println(azSensor.getAverageAngle(50));
+  Serial.println(azSensor.getExpSmoothAngle(0.1));
 //  Serial.print("Azimuth angle: ");
 //  Serial.println(azSensor.getExpSmoothAngle(0.15));
 //  azSensor.printDiagnostics();

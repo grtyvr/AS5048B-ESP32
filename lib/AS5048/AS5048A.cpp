@@ -21,17 +21,104 @@ const uint16_t AS5048_READ_CMD = 0x4000;  // bit 15 = 1 for read operation.
 
 SPIClass * vspi = NULL;
 
-AS5048A::AS5048A(uint8_t arg_cs){
+class Angle{
+  public:
+    // constructor with no arguments means that we have to set the angle / tics later
+    Angle(){
+      _tics = 0;
+      _radians = 0.0;
+      _x = 0.0;
+      _y=0.0;
+    }
+    // constructor that takes an unsigned 16 bit number and sets the radians as a positive rotation (CCW) from zero
+    Angle(uint16_t tics){
+      _tics = tics;
+      _radians = _angleIncrement * _tics;
+      _x = cos(_radians);
+      _y = sin(_radians);
+    }
+    // constructor that takes a float representing the rotation in radians and set the tics as a positive rotation (CCW) from zero
+    Angle(double radians){
+      _radians = radians;
+      // first normalize the value so that it's absolute value is in [0, 2*PI)
+      // do that by counting the number of full rotations in the input value (multiples of 2PI) using the floor function
+      if (_radians >= 2*PI){
+        // subtract the number of whole clockwise rotations over 1
+        _radians = _radians - floor(_radians/(2*PI))*2*PI;
+      } else if (_radians < 0) { 
+        // our value is a clockwise rotation from zero.
+        // so in this case add the number of whole rotations clockwise
+        _radians = _radians + floor(abs(_radians)/(2*PI))*2*PI;
+        // then normalize this to a positive rotation counter clockwise
+        _radians = 2*PI + _radians;
+      }
+      // now we have a positive angle that is in the interval[0,2*PI)
+      // so digitize that value to the nearest angular increment 
+      _tics = (uint16_t) round(_radians / _angleIncrement);
+      _x = cos(_radians);
+      _y = sin(_radians);
+    }
+
+    void setTics(uint16_t tics){
+      _tics = tics;
+      _radians = _angleIncrement * _tics;
+      _x = cos(_radians);
+      _y = sin(_radians);
+    }
+    void setRadians(double radians){
+      _radians = radians;
+      // first normalize the value so that it's absolute value is in [0, 2*PI)
+      // do that by counting the number of full rotations in the input value (multiples of 2PI) using the floor function
+      if (_radians >= 2*PI){
+        // subtract the number of whole clockwise rotations over 1
+        _radians = _radians - floor(_radians/(2*PI))*2*PI;
+      } else if (_radians < 0) { 
+        // our value is a clockwise rotation from zero.
+        // so in this case add the number of whole rotations clockwise
+        _radians = _radians + floor(abs(_radians)/(2*PI))*2*PI;
+        // then normalize this to a positive rotation counter clockwise
+        _radians = 2*PI + _radians;
+      }
+      // now we have a positive angle that is in the interval[0,2*PI)
+      // so digitize that value to the nearest angular increment 
+      _tics = (uint16_t) round(_radians / _angleIncrement);
+      _x = cos(_radians);
+      _y = sin(_radians);
+    }
+    uint16_t getTics(){
+      return _tics;
+    }
+    double getRadians(){
+      return _radians;
+    }
+    double x(){
+      return _x;
+    }
+    double y(){
+      return _y;
+    }
+
+  private:
+    double _angleIncrement = (2* PI) / pow(2,14);  // The smallest angle we can represent with our encoder
+    uint16_t _tics = 0;                           // The number of tics that best represents an angle in radians
+    double _radians = 0.0;                         // The number of radians in tics based on our smalles angular increment
+    double _x = 0.0;                               // x component of the angle on unit circle
+    double _y = 0.0;                               // y component of the angle on unit circle
+    uint8_t _nullZone = 0;
+};
+
+AS5048A::AS5048A(uint8_t arg_cs, uint8_t nullZone){
   _cs = arg_cs;
+  _nullZone = nullZone;
   pinMode(_cs, OUTPUT);
   _errorFlag = false;
   _angle = 0.0;                           // initialize to zero degrees
 }
 
-void AS5048A::init(){
+void AS5048A::init(uint32_t clock, uint8_t bitOrder, uint8_t dataMode){
   // set up the SPI interface so that we can communicate with the chip
   // use mode 1, 
-  settings = SPISettings(1000000, MSBFIRST, SPI_MODE1);
+  settings = SPISettings(clock, bitOrder, dataMode);
   vspi = new SPIClass(VSPI);
   // Wake up the bus
   vspi->begin();
@@ -54,7 +141,19 @@ uint16_t AS5048A::getMagnitude(){
 uint16_t AS5048A::getAngle(){
   uint16_t rawData = read(AS5048_REG_ANGLE);
   // the bottom 14 bits are the angle
-  return rawData &= 0x3FFF;
+  rawData &= 0x3FFF;
+  Serial.print(" null zone: ");
+  Serial.print(_nullZone);
+  Serial.print(" ");
+  Serial.print(" old angle: ");
+  Serial.print(_angle);
+  Serial.print(" ");
+  if (abs(rawData - _angle) > _nullZone){
+    _angle = rawData; 
+    return rawData &= 0x3FFF;
+  } else {
+    return _angle;
+  }
 }
 
 uint16_t AS5048A::getExpSmoothAngle(float smoothingFactor){
@@ -98,37 +197,33 @@ uint16_t AS5048A::getExpSmoothAngle(float smoothingFactor){
 
 uint16_t AS5048A::getAverageAngle(int numSamples){
   uint16_t retVal;
-  // define a constant for the smallest angular increment we can have in radians
-  // to generalize this to other bitdepth encoders replace the 2^14 with the number of increments
-  const float angleIncrement = ( 2 * PI ) / (2^14);
+  float averageX = 0.0;
+  float averageY = 0.0;
+  Angle sample;
   /// take a number of samples and return the circular mean value
   /// since we might have a situation where we are sampling at the transition from
   /// 2^14 - n to m for small integer n and small integer m, have to be carefull to normalize our data
-  uint16_t sample;
-  float x_coord = 0;
-  float y_coord = 0;
   for (int i=0; i < numSamples; i++){
     // take a sample and compute the x and y coordinate of the sample as if it on the unit circle
-    sample = getAngle();
-    x_coord += cos(sample * angleIncrement);
-    y_coord += sin(sample * angleIncrement);
+    sample.setTics(read(AS5048_REG_ANGLE));
+    averageX += sample.x();
+    averageY += sample.y();
   }
   // Take the average X and average Y values
-  float averageX = x_coord/numSamples;
-  float averageY = y_coord/numSamples;
+  averageX = averageX/numSamples;
+  averageY = averageY/numSamples;
   if ( (averageX == 0.0) & (averageY ==0.0) ){
     // pathalogical case of both X and Y being equal to zero as floats!
     retVal = 0;
   } else {
-    float angle = atan2(averageY, averageX);
-    if (angle >= 0){
-      // if the angle returned by atan2 is positive then it is a positive rotation CCW 
-      retVal = round(angle/angleIncrement);
+    Angle angle(atan2(averageY, averageX));
+    if (abs(_angle - angle.getTics()) > _nullZone){
+      retVal = angle.getTics();
+    } else {
+      retVal = _angle;
     }
-
+    _angle = angle.getTics();
   }
-
-
   return retVal; 
 }
 

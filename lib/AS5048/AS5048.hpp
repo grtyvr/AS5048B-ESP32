@@ -4,21 +4,22 @@
 
 class AS5048A{
     private:
-    bool _errorFlag;
-    uint8_t _cs;
-    float _angle;  // stores the last angle read
+        bool _errorFlag;
+        uint8_t _cs;
+        float _angle;  // stores the last angle read
+        uint8_t _nullZone = 0;
 
     SPISettings settings;
 
     public:
         /**
-         * @brief Constructor takes the chip select pin as an argument.
+         * @brief Constructor.
          * 
-         *  @param {uint8_t} arg_cs Takes 
+         *  @param {uint8_t} arg_cs The pin used for selecting the chip. 
          */
-        AS5048A(uint8_t arg_cs);
+        AS5048A(uint8_t arg_cs, uint8_t nullZone = 3);
         /**
-         * @brief Initializer ets up the SPI bus for communications with the chip.  
+         * @brief Initializer sets up the SPI bus for communications with the chip.  
          * 
          * @param clock default value of 1KHz
          * @param bitOrder default value of MSBFIRST
@@ -61,4 +62,5 @@ class AS5048A{
         uint8_t calcEvenParity(uint16_t value);
         uint16_t read(uint16_t registerAddress);
         uint16_t write(uint16_t registerAddress, uint16_t data);
+
 };

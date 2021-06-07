@@ -195,10 +195,10 @@ uint16_t AS5048A::getExpSmoothAngle(float smoothingFactor){
   return  ((uint16_t) round(_angle)) % 16384;
 }
 
-uint16_t AS5048A::getAverageAngle(int numSamples){
+uint16_t AS5048A::getMeanAngle(int numSamples){
   uint16_t retVal;
-  float averageX = 0.0;
-  float averageY = 0.0;
+  float meanX = 0.0;
+  float meanY = 0.0;
   Angle sample;
   /// take a number of samples and return the circular mean value
   /// since we might have a situation where we are sampling at the transition from
@@ -206,17 +206,17 @@ uint16_t AS5048A::getAverageAngle(int numSamples){
   for (int i=0; i < numSamples; i++){
     // take a sample and compute the x and y coordinate of the sample as if it on the unit circle
     sample.setTics(read(AS5048_REG_ANGLE));
-    averageX += sample.x();
-    averageY += sample.y();
+    meanX += sample.x();
+    meanY += sample.y();
   }
   // Take the average X and average Y values
-  averageX = averageX/numSamples;
-  averageY = averageY/numSamples;
-  if ( (averageX == 0.0) & (averageY ==0.0) ){
+  meanX = meanX/numSamples;
+  meanY = meanY/numSamples;
+  if ( (meanX == 0.0) & (meanY ==0.0) ){
     // pathalogical case of both X and Y being equal to zero as floats!
     retVal = 0;
   } else {
-    Angle angle(atan2(averageY, averageX));
+    Angle angle(atan2(meanY, meanX));
     if (abs(_angle - angle.getTics()) > _nullZone){
       retVal = angle.getTics();
     } else {
@@ -252,30 +252,34 @@ uint16_t AS5048A::getDiag(){
 
 uint8_t AS5048A::getGain(){
   // the gain is in the bottom 8 bits
-  return read(AS5048_REG_AGC) &0xFF;
+  return read(AS5048_REG_AGC) & 0xFF;
 }
 
 uint8_t AS5048A::getErrors(){
+  _errorFlag = false;
+  // To get the value of the error flags we have to send a special read command
+  // The command clears the ERROR FLAG which is contained in every READ frame.
   // read the error register of the last command
   uint8_t retVal;
   // Set up the command we will send
-  uint16_t command = 0x4001;  // 0b0100000000000001
+  uint16_t cmdClearErrorFlag = 0x4001;  // 0b0100000000000001
   vspi->beginTransaction(settings);
   // Drop cs low to enable the AS5048
   digitalWrite(_cs, LOW);
-  retVal = vspi->transfer16(command);
+  retVal = vspi->transfer16(cmdClearErrorFlag);
   digitalWrite(_cs, HIGH);
   delayMicroseconds(100);
   digitalWrite(_cs, LOW);
-  // you have to poll the chip twice.  Data from previous command comes
-  // back on the next SPI transfer
-  retVal = vspi->transfer16(command);
+  // the next two commands are NOP commands 
+  // the first one is to trigger the return of the Error Register contents
+  // and will still have the Error Flag Set.
+  retVal = vspi->transfer16(0x0);
   digitalWrite(_cs, HIGH);
   delayMicroseconds(100);
   digitalWrite(_cs, LOW);
-  // // you have to poll the chip twice.  Data from previous command comes
-  // // back on the next SPI transfer
-  vspi->transfer16(command);
+  // The second one will trigger the clearing of the Error Flag and we do not
+  // get any usefull information back with that command
+  vspi->transfer16(0x0);
   digitalWrite(_cs, HIGH);
   vspi->endTransaction();
   #ifdef AS5048A_DEBUG

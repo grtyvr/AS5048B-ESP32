@@ -5,6 +5,7 @@
 class AS5048A{
     private:
         bool _errorFlag;
+        uint8_t _errorValue;
         uint8_t _cs;
         float _angle;  // stores the last angle read
         uint8_t _nullZone = 0;
@@ -52,9 +53,30 @@ class AS5048A{
          * new_angle = old_angle*(1 - smoothingFactor) + new_angle*smoothingFactor
          */
         uint16_t getExpSmoothAngle(float smoothingFactor);
-        uint16_t getAverageAngle(int numSamples);
+        /**
+         * getMeanAngle
+         * @param {int} numSamples
+         * @return {uint16_t} mean value from a sample of numSample angle readings as a value in the interval [0,2^14-1].
+         * Rotation counter clockwise from the current zero position.  This value is the circular mean of the angles read.
+         */
+        uint16_t getMeanAngle(int numSamples);
+        /**
+         * printDiagnositcs
+         * @return {uint16_t} mean value from a sample of numSample angle readings as a value in the interval [0,2^14-1].
+         * Print diagnostic information to the serial port 
+         */
         void printDiagnostics();
+        /**
+         * getGain
+         * @return {uint8_t} Return the current Gain register value. The gain is stored in the first 8 bits of the
+         * Diagnostics + Automatic Gain Control register 0x3FFD
+         */
         uint8_t getGain();
+        /**
+         * getErrors
+         * @return {uint8_t} Return the error flags.
+         * 
+         */
         uint8_t getErrors();
         bool error();
     private:
@@ -62,5 +84,4 @@ class AS5048A{
         uint8_t calcEvenParity(uint16_t value);
         uint16_t read(uint16_t registerAddress);
         uint16_t write(uint16_t registerAddress, uint16_t data);
-
 };
